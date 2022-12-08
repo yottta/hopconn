@@ -24,9 +24,8 @@ func TestNewConn(t *testing.T) {
 			return "123.123.123.123", nil
 		}))
 		require.NoError(t, err)
-		// let everything start
 
-		<-time.After(200 * time.Millisecond)
+		<-time.After(100 * time.Millisecond)
 		conn.Close()
 
 		// wait for conn to close
@@ -47,7 +46,9 @@ func TestNewConn(t *testing.T) {
 	Then the connection is closed and all the resources are freed`, func(t *testing.T) {
 		initial := runtime.NumGoroutine()
 		ctx, cancel := context.WithCancel(context.Background())
-		conn, err := NewConn(ctx, WithLoggingLevel(zerolog.TraceLevel))
+		conn, err := NewConn(ctx, WithLoggingLevel(zerolog.TraceLevel), WithPublicIPProvider(func() (string, error) {
+			return "123.123.123.123", nil
+		}))
 		require.NoError(t, err)
 		<-time.After(100 * time.Millisecond)
 		cancel()
@@ -91,7 +92,7 @@ func TestConnectionManager_AttemptConnection(t *testing.T) {
 		require.NoError(t, err)
 		conn2, err := NewConn(ctx,
 			WithLoggingTraceID("conn2"),
-			WithLoggingLevel(zerolog.FatalLevel),
+			WithLoggingLevel(zerolog.TraceLevel),
 			WithAttemptRetries(1),
 			WithAttemptTimeout(500*time.Millisecond),
 			WithPublicIPProvider(func() (string, error) {
@@ -134,13 +135,8 @@ func TestConnectionManager_AttemptConnection(t *testing.T) {
 		wg.Wait()
 
 		// write some data on the first connection
-		write, err := conn1.Write([]byte("test from conn1"))
-		require.NoError(t, err)
-		require.Equal(t, 15, write)
-		// write data on the second connection
-		write, err = conn2.Write([]byte("test from conn2"))
-		require.Equal(t, 15, write)
-		require.NoError(t, err)
+		require.NoError(t, conn1.Write([]byte("test from conn1")))
+		require.NoError(t, conn2.Write([]byte("test from conn2")))
 
 		// read the messages received and be sure that there isn't sent more than one info / connection side
 		var msgCnt int
@@ -164,16 +160,36 @@ func TestConnectionManager_AttemptConnection(t *testing.T) {
 			}
 		}
 		require.Equal(t, 2, msgCnt)
+
 		conn1.Close()
 		conn2.Close()
-		_, ok := <-conn1.Errors()
-		require.True(t, ok)
-		_, ok = <-conn1.Errors()
-		require.False(t, ok)
-		_, ok = <-conn2.Errors()
-		require.True(t, ok)
-		_, ok = <-conn2.Errors()
-		require.False(t, ok)
+		var cnt int
+		for {
+			e, ok := <-conn1.Errors()
+			if ok {
+				require.True(t,
+					errors.Is(e, net.ErrClosed) || errors.Is(e, io.EOF),
+					"expected conn1 error to be either net.ErrClosed or io.EOF but it's %s", e)
+				cnt++
+				continue
+			}
+			break
+		}
+		require.GreaterOrEqualf(t, cnt, 1, "conn1")
+
+		cnt = 0
+		for {
+			e, ok := <-conn2.Errors()
+			if ok {
+				require.True(t,
+					errors.Is(e, net.ErrClosed) || errors.Is(e, io.EOF),
+					"expected conn2 error to be either net.ErrClosed or io.EOF but it's %s", e)
+				cnt++
+				continue
+			}
+			break
+		}
+		require.GreaterOrEqualf(t, cnt, 1, "conn2")
 	})
 
 	t.Run(`Given two connections connected one to another,
@@ -193,7 +209,7 @@ func TestConnectionManager_AttemptConnection(t *testing.T) {
 		require.NoError(t, err)
 		conn2, err := NewConn(ctx,
 			WithLoggingTraceID("conn2"),
-			WithLoggingLevel(zerolog.FatalLevel),
+			WithLoggingLevel(zerolog.TraceLevel),
 			WithAttemptRetries(1),
 			WithAttemptTimeout(500*time.Millisecond),
 			WithPublicIPProvider(func() (string, error) {
@@ -225,40 +241,42 @@ func TestConnectionManager_AttemptConnection(t *testing.T) {
 		}()
 		wg.Wait()
 
+		<-time.After(100 * time.Millisecond)
 		conn1.Close()
 		conn2.Close()
 
 		// wait for conn1 to close
-		t.Log("waiting for conn1 errors")
-		select {
-		case e := <-conn1.Errors():
-			t.Logf("conn1 error is: %s", e)
-			require.True(t,
-				errors.Is(e, net.ErrClosed) || errors.Is(e, io.EOF),
-				"expected conn1 error to be either net.ErrClosed or io.EOF but it's %s", e)
-		case <-time.After(time.Second):
-			require.Fail(t, "expected for conn1 to receive net.ErrClosed but received nothing")
+		var cnt int
+		for {
+			e, ok := <-conn1.Errors()
+			if ok {
+				require.True(t,
+					errors.Is(e, net.ErrClosed) || errors.Is(e, io.EOF),
+					"expected conn1 error to be either net.ErrClosed or io.EOF but it's %s", e)
+				cnt++
+				continue
+			}
+			break
 		}
+		require.GreaterOrEqualf(t, cnt, 1, "conn1")
 
-		// wait for conn2 to close
-		t.Log("waiting for conn2 errors")
-		select {
-		case e := <-conn2.Errors():
-			t.Logf("conn2 error is: %s", e)
-			require.True(t,
-				errors.Is(e, net.ErrClosed) || errors.Is(e, io.EOF),
-				"expected conn2 error to be either net.ErrClosed or io.EOF but it's %s", e)
-		case <-time.After(time.Second):
-			require.Fail(t, "expected for conn2 to receive net.ErrClosed but received nothing")
+		cnt = 0
+		for {
+			e, ok := <-conn2.Errors()
+			if ok {
+				require.True(t,
+					errors.Is(e, net.ErrClosed) || errors.Is(e, io.EOF),
+					"expected conn2 error to be either net.ErrClosed or io.EOF but it's %s", e)
+				cnt++
+				continue
+			}
+			break
 		}
+		require.GreaterOrEqualf(t, cnt, 1, "conn2")
 
-		// When the connections are closed then Write will return ErrNoConnectionEstablished
-		i, err := conn1.Write([]byte("test"))
-		require.Equal(t, ErrNoConnectionEstablished, err)
-		require.Equal(t, -1, i)
-		i, err = conn2.Write([]byte("test"))
-		require.Equal(t, ErrNoConnectionEstablished, err)
-		require.Equal(t, -1, i)
+		// When the connections are closed then Write will return ErrStopped
+		require.Equal(t, ErrStopped, conn1.Write([]byte("test")))
+		require.Equal(t, ErrStopped, conn2.Write([]byte("test")))
 	})
 
 	t.Run(`Given one connection,
