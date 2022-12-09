@@ -17,13 +17,15 @@ import (
 )
 
 var (
-	// ErrAlreadyEstablished will be returned in case Manager.AttemptConnection is called on an already established connection
+	// ErrAlreadyEstablished is returned when a new connection attempt is performed while a connection is already established.
 	ErrAlreadyEstablished = errors.New("a connection was already established")
-	// ErrStopped will be returned in case Manager.AttemptConnection is called on an already stopped connection
+	// ErrStopped is returned when a new connection attempt is performed while the existing Manager is already stopped.
 	ErrStopped = errors.New("connection manager stopped")
-	// ErrNoConnectionEstablished is returned when Manager.Write is called when no connection is yet established.
-	// This is also returned when the connection is closed.
+	// ErrNoConnectionEstablished is returned when the listening is failing.
 	ErrNoConnectionEstablished = errors.New("no conn established")
+	// ErrAddressesDismissed indicates that some addresses are dismissed from being attempted a connection to due to the misconfiguration of the connection.
+	// In order to avoid this, be sure that you are using WithNoOfAddressesToAttempt to express the number of addresses that are needed to be attempted.
+	ErrAddressesDismissed = errors.New("addresses dismissed because of the misconfigured connection")
 )
 
 // Manager defines the way a hole punch connection manager behaves.
@@ -39,44 +41,24 @@ type Manager interface {
 	// The errors returned will be returned from different flows:
 	// * during listening for a connection
 	// * during reading from the connection if occurred an error that closed the connection
+	// * during writing to the connection if occurred an error that closed the connection
 	// IMPORTANT: Once an error is sent through this channel that is an indication that the connection is not viable anymore and a new one needs to be created.
 	Errors() <-chan error
 	// EstablishedEvents returns a read only channel that just signals the success establishing of a connection.
-	// This is meant to signal just once. This is a buffered channel so reading later this will still give back the event.
+	// Once the channel is closed means that the connection was established.
 	EstablishedEvents() <-chan struct{}
 
+	// Write schedules the given byte slice to be written to the connection.
 	Write([]byte) error
-
-	// Close is closing the connection and all associated resources
+	// Close is closing the connection and all associated resources.
 	Close()
 
-	// LocalAddress returns back the local address of the connection
+	// LocalAddress returns back the local address of the connection.
+	// This can be controlled by using WithLocalIPProvider.
 	LocalAddress() string
-	// PublicAddress returns back the public address of the connection
+	// PublicAddress returns back the public address of the connection.
+	// This can be controlled by using WithPublicIPProvider
 	PublicAddress() string
-}
-
-type connectionManager struct {
-	log zerolog.Logger
-
-	localListener   net.Listener
-	globalListener  net.Listener // we are using this just to reserve a port that will be used to run net.DialTCP
-	publicIP        string
-	publicPort      int
-	localIPProvider IPProvider
-
-	dataOutHandlers   []func([]byte)
-	errorEvents       chan error
-	establishedEvents chan struct{}
-
-	stopCh    chan struct{}
-	stoppedMu sync.RWMutex
-	stopped   bool
-
-	writeCh          chan []byte
-	attemptAddresses chan string
-	attemptRetries   int
-	attemptTimeout   time.Duration
 }
 
 type managerOpts struct {
@@ -132,9 +114,28 @@ func WithLocalIPProvider(p IPProvider) func(c *managerOpts) {
 	}
 }
 
-//func NewConn(ctx context.Context, opts ...func(manager *managerOpts)) (Manager, error) {
-//	return NewConnWithNoOfAttempts(ctx, 10, opts...)
-//}
+type connectionManager struct {
+	log zerolog.Logger
+
+	localListener   net.Listener
+	globalListener  net.Listener // we are using this just to reserve a port that will be used to run net.DialTCP
+	publicIP        string
+	publicPort      int
+	localIPProvider IPProvider
+
+	dataOutHandlers   []func([]byte)
+	errorEvents       chan error
+	establishedEvents chan struct{}
+
+	stopCh    chan struct{}
+	stoppedMu sync.RWMutex
+	stopped   bool
+
+	writeCh          chan []byte
+	attemptAddresses chan string
+	attemptRetries   int
+	attemptTimeout   time.Duration
+}
 
 // NewConn returns a Manager. During calling this, the Manager will start listening on a system assigned port and will allocate also a
 // port for being used when Manager.AttemptConnection calls.
@@ -224,7 +225,7 @@ func (c *connectionManager) AttemptConnection(peerAddresses ...string) error {
 		}
 	}
 	if len(notAdded) > 0 {
-		return fmt.Errorf("the following addresses were not registered: %s", strings.Join(notAdded, ","))
+		return fmt.Errorf("%w: %s", ErrAddressesDismissed, strings.Join(notAdded, ","))
 	}
 	close(c.attemptAddresses)
 	return nil
@@ -306,7 +307,10 @@ func (c *connectionManager) listen(ctx context.Context) error {
 		var wgl sync.WaitGroup
 		wgl.Add(1)
 		go func() {
-			defer wgl.Done()
+			defer func() {
+				cancel()
+				wgl.Done()
+			}()
 			if err := c.readLoop(loopsCtx, conn); err != nil {
 				c.log.Warn().
 					Err(err).
@@ -316,7 +320,10 @@ func (c *connectionManager) listen(ctx context.Context) error {
 		}()
 		wgl.Add(1)
 		go func() {
-			defer wgl.Done()
+			defer func() {
+				cancel()
+				wgl.Done()
+			}()
 			if err := c.writeLoop(loopsCtx, conn); err != nil {
 				c.log.Warn().
 					Err(err).
@@ -368,7 +375,7 @@ func (c *connectionManager) establishConn(ctx context.Context) (net.Conn, error)
 				Str("remote_address", caw.conn.RemoteAddr().String()).
 				Msg("connection established")
 			cancel()
-			// do not break to consume the connection inside the channel and close them if it's the case
+			// do not break - consume the connection(s) inside the channel and close them since we already have one established connection
 		}
 	}()
 	go func() {
