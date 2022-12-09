@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/rs/zerolog"
-	"github.com/stretchr/testify/require"
 	"io"
 	"net"
 	"runtime"
@@ -13,6 +11,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewConn(t *testing.T) {
