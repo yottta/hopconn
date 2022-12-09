@@ -1,7 +1,7 @@
 # P2P Chat
 
 A simple example of connecting between two chat clients by exchanging theirs addresses manually.
-In a real system you would have a central server that will help clients exchanging their public/private addresses
+In a real system you would have a central server that will help clients exchanging their public/private addresses.
 
 ## Run
 
@@ -28,7 +28,7 @@ For connecting two remote clients, use Remote address instead.
 ```
 
 ### Connect 
-In order to connect you need to get one of the local address of one of the clients and give it to the other one.
+In order to connect, you need to get the local address of one of the clients and give it to the other one.
 So I will just type the client2's `Local` address into the client1's prompt and hit Enter.
 ```shell
 %> go run .
