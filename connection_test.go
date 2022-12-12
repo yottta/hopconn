@@ -30,7 +30,7 @@ func TestNewConn(t *testing.T) {
 
 }
 
-func TestConnectionManager_Closing(t *testing.T) {
+func TestConnection_Closing(t *testing.T) {
 	t.Run(`Given a connection got from NewConn,
 	When Close is called,
 	Then the connection is closed and all the resources are freed`, func(t *testing.T) {
@@ -89,7 +89,7 @@ func TestConnectionManager_Closing(t *testing.T) {
 	})
 }
 
-func TestConnectionManager_AttemptConnection(t *testing.T) {
+func TestConnection_AttemptConnection(t *testing.T) {
 	t.Run(`Given two connections,
 	When one is connecting to another in the same time,
 	Then both are using the same connection and can send and receive data`, func(t *testing.T) {
@@ -632,7 +632,7 @@ func TestConnectionManager_AttemptConnection(t *testing.T) {
 	})
 }
 
-func TestConnectionManager_LocalAddress(t *testing.T) {
+func TestConnection_LocalAddress(t *testing.T) {
 	t.Run(`Given a localIPProvider that returns ip,
 	When LocalAddress is called,
 	The IP from the provider is returned containing the port from the localListener`, func(t *testing.T) {

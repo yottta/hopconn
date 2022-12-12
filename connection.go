@@ -20,8 +20,8 @@ import (
 var (
 	// ErrAlreadyEstablished is returned when a new connection attempt is performed while a connection is already established.
 	ErrAlreadyEstablished = errors.New("a connection was already established")
-	// ErrStopped is returned when a new connection attempt is performed while the existing Manager is already stopped.
-	ErrStopped = errors.New("connection manager stopped")
+	// ErrStopped is returned when a new connection attempt is performed while the existing Connection is already stopped.
+	ErrStopped = errors.New("connection stopped")
 	// ErrNoConnectionEstablished is returned when the listening is failing.
 	ErrNoConnectionEstablished = errors.New("no conn established")
 	// ErrAddressesDismissed indicates that some addresses are dismissed from being attempted a connection to due to the misconfiguration of the connection.
@@ -29,40 +29,7 @@ var (
 	ErrAddressesDismissed = errors.New("addresses dismissed because of the misconfigured connection")
 )
 
-// Manager defines the way a hole punch connection manager behaves.
-type Manager interface {
-	// AttemptConnection receives the addresses and schedules them for attempting.
-	// IMPORTANT: This method can be called only once. After this, the client needs to use Errors() in conjunction with EstablishedEvents()
-	// to listen for any events happening.
-	AttemptConnection(addresses ...string) error
-	// RegisterDataHandler registers methods that will be invoked anytime some data is received by the connection
-	RegisterDataHandler(func(dat []byte))
-
-	// Errors returns a read only channel that returns **termination** errors occurred during connection life span.
-	// The errors returned will be returned from different flows:
-	// * during listening for a connection
-	// * during reading from the connection if occurred an error that closed the connection
-	// * during writing to the connection if occurred an error that closed the connection
-	// IMPORTANT: Once an error is sent through this channel that is an indication that the connection is not viable anymore and a new one needs to be created.
-	Errors() <-chan error
-	// EstablishedEvents returns a read only channel that just signals the success establishing of a connection.
-	// Once the channel is closed means that the connection was established.
-	EstablishedEvents() <-chan struct{}
-
-	// Write schedules the given byte slice to be written to the connection.
-	Write([]byte) error
-	// Close is closing the connection and all associated resources.
-	Close()
-
-	// LocalAddress returns back the local address of the connection.
-	// This can be controlled by using WithLocalIPProvider.
-	LocalAddress() string
-	// PublicAddress returns back the public address of the connection.
-	// This can be controlled by using WithPublicIPProvider
-	PublicAddress() string
-}
-
-type managerOpts struct {
+type connOpts struct {
 	log zerolog.Logger
 
 	attemptTimeout         time.Duration
@@ -73,49 +40,49 @@ type managerOpts struct {
 	localIPProvider  IPProvider
 }
 
-func WithLoggingTraceID(traceID string) func(c *managerOpts) {
-	return func(c *managerOpts) {
+func WithLoggingTraceID(traceID string) func(c *connOpts) {
+	return func(c *connOpts) {
 		c.log = c.log.With().Str("traceID", traceID).Logger()
 	}
 }
 
-func WithLoggingLevel(l zerolog.Level) func(c *managerOpts) {
-	return func(c *managerOpts) {
+func WithLoggingLevel(l zerolog.Level) func(c *connOpts) {
+	return func(c *connOpts) {
 		c.log = c.log.Level(l)
 	}
 }
 
-func WithAttemptTimeout(t time.Duration) func(c *managerOpts) {
-	return func(c *managerOpts) {
+func WithAttemptTimeout(t time.Duration) func(c *connOpts) {
+	return func(c *connOpts) {
 		c.attemptTimeout = t
 	}
 }
 
-func WithAttemptRetries(r int) func(c *managerOpts) {
-	return func(c *managerOpts) {
+func WithAttemptRetries(r int) func(c *connOpts) {
+	return func(c *connOpts) {
 		c.attemptRetries = r
 	}
 }
 
-func WithNoOfAddressesToAttempt(n int) func(c *managerOpts) {
-	return func(c *managerOpts) {
+func WithNoOfAddressesToAttempt(n int) func(c *connOpts) {
+	return func(c *connOpts) {
 		c.noOfAddressesToAttempt = n
 	}
 }
 
-func WithPublicIPProvider(p IPProvider) func(c *managerOpts) {
-	return func(c *managerOpts) {
+func WithPublicIPProvider(p IPProvider) func(c *connOpts) {
+	return func(c *connOpts) {
 		c.publicIPProvider = p
 	}
 }
 
-func WithLocalIPProvider(p IPProvider) func(c *managerOpts) {
-	return func(c *managerOpts) {
+func WithLocalIPProvider(p IPProvider) func(c *connOpts) {
+	return func(c *connOpts) {
 		c.localIPProvider = p
 	}
 }
 
-type connectionManager struct {
+type Connection struct {
 	log zerolog.Logger
 
 	localListener   net.Listener
@@ -138,13 +105,13 @@ type connectionManager struct {
 	attemptTimeout   time.Duration
 }
 
-// NewConn returns a Manager. During calling this, the Manager will start listening on a system assigned port and will allocate also a
-// port for being used when Manager.AttemptConnection calls.
-// Even if the Manager.AttemptConnection will not be used, be sure that you are calling Manager.Close when you are done with it
+// NewConn returns a Connection. During calling this, the Connection will start listening on a system assigned port and will allocate also a
+// port for being used when Connection.AttemptConnection calls.
+// Even if the Connection.AttemptConnection will not be used, be sure that you are calling Connection.Close when you are done with it
 // or that you are cancelling the ctx given to this constructor.
-// This constructor builds a Manager that ensures correct behaviour of the Manager.AttemptConnection with a list of addresses up to a size equals with 3.
-func NewConn(ctx context.Context, opts ...func(manager *managerOpts)) (Manager, error) {
-	mOpts := &managerOpts{
+// This constructor builds a Connection that ensures correct behaviour of the Connection.AttemptConnection with a list of addresses up to a size equals with 3.
+func NewConn(ctx context.Context, opts ...func(c *connOpts)) (*Connection, error) {
+	mOpts := &connOpts{
 		log:                    log.With().Logger().Level(zerolog.ErrorLevel),
 		attemptTimeout:         3 * time.Second,
 		attemptRetries:         3,
@@ -177,7 +144,7 @@ func NewConn(ctx context.Context, opts ...func(manager *managerOpts)) (Manager, 
 		return nil, err
 	}
 
-	manager := &connectionManager{
+	c := &Connection{
 		log: mOpts.log,
 
 		localListener:   local,
@@ -199,21 +166,23 @@ func NewConn(ctx context.Context, opts ...func(manager *managerOpts)) (Manager, 
 		attemptTimeout:   mOpts.attemptTimeout,
 	}
 	go func() {
-		if err := manager.listen(ctx); err != nil {
-			manager.log.Error().Err(err).Msg("listening ended with error")
-			manager.Close()
-			manager.sendError(err)
-			close(manager.errorEvents)
+		if err := c.listen(ctx); err != nil {
+			c.log.Error().Err(err).Msg("listening ended with error")
+			c.Close()
+			c.sendError(err)
+			close(c.errorEvents)
 			return
 		}
 	}()
-	return manager, nil
+	return c, nil
 }
 
-// AttemptConnection gets the list of addresses and adds them to a channel.
+// AttemptConnection gets the list of addresses and schedules them for attempting.
 // In case the len(peerAddresses) is greater than the number of addresses to be attempted configured during NewConn,
 // this method does not ensure that all the addresses will be used.
-func (c *connectionManager) AttemptConnection(peerAddresses ...string) error {
+// IMPORTANT: This method can be called only once. After this, the client needs to use Errors() in conjunction with EstablishedEvents()
+// to listen for any events happening
+func (c *Connection) AttemptConnection(peerAddresses ...string) error {
 	if c.isStopped() {
 		return ErrStopped
 	}
@@ -232,9 +201,9 @@ func (c *connectionManager) AttemptConnection(peerAddresses ...string) error {
 	return nil
 }
 
-// LocalAddress makes use of the LocalIP in order to discover the current system localIP.
-// In case that the call to LocalIP fails this will get only the address of the net.Listener in charge of accepting connections requests.
-func (c *connectionManager) LocalAddress() string {
+// LocalAddress returns back the local address of the connection.
+// This can be controlled by using WithLocalIPProvider.
+func (c *Connection) LocalAddress() string {
 	ip, err := c.localIPProvider()
 	if err != nil {
 		return c.localListener.Addr().String()
@@ -246,23 +215,30 @@ func (c *connectionManager) LocalAddress() string {
 	return net.JoinHostPort(ip, port)
 }
 
-// PublicAddress returns the publicIP and publicPort generated during NewConn.
-func (c *connectionManager) PublicAddress() string {
+// PublicAddress returns back the public address of the connection.
+// This can be controlled by using WithPublicIPProvider
+func (c *Connection) PublicAddress() string {
 	return net.JoinHostPort(c.publicIP, strconv.Itoa(c.publicPort))
 }
 
-// Errors returns the read-only channel for the generated errors. See Manager.Errors for more details.
-func (c *connectionManager) Errors() <-chan error {
+// Errors returns a read only channel that returns **termination** errors occurred during connection life span.
+// The errors returned will be returned from different flows:
+// * during listening for a connection
+// * during reading from the connection if occurred an error that closed the connection
+// * during writing to the connection if occurred an error that closed the connection
+// IMPORTANT: Once an error is sent through this channel that is an indication that the connection is not viable anymore and a new one needs to be created.
+func (c *Connection) Errors() <-chan error {
 	return c.errorEvents
 }
 
-// EstablishedEvents returns the read-only channel to signal when an event is established. See Manager.EstablishedEvents for more details.
-func (c *connectionManager) EstablishedEvents() <-chan struct{} {
+// EstablishedEvents returns a read only channel that just signals the success establishing of a connection.
+// Once the channel is closed means that the connection was established.
+func (c *Connection) EstablishedEvents() <-chan struct{} {
 	return c.establishedEvents
 }
 
-// Write is used to write data on the established connection.
-func (c *connectionManager) Write(in []byte) error {
+// Write schedules the given byte slice to be written to the connection.
+func (c *Connection) Write(in []byte) error {
 	if c.isStopped() {
 		return ErrStopped
 	}
@@ -270,13 +246,13 @@ func (c *connectionManager) Write(in []byte) error {
 	return nil
 }
 
-// RegisterDataHandler is used to register method handlers for processing incoming data. See Manager.RegisterDataHandler for details.
-func (c *connectionManager) RegisterDataHandler(dh func(dat []byte)) {
+// RegisterDataHandler registers methods that will be invoked anytime some data is received by the connection.
+func (c *Connection) RegisterDataHandler(dh func(dat []byte)) {
 	c.dataOutHandlers = append(c.dataOutHandlers, dh)
 }
 
-// Close is closing the current Manager. Once stopped, this method will do nothing.
-func (c *connectionManager) Close() {
+// Close is closing the connection and all associated resources. Once stopped, this method will do nothing.
+func (c *Connection) Close() {
 	if c.isStopped() {
 		return
 	}
@@ -286,7 +262,7 @@ func (c *connectionManager) Close() {
 	return
 }
 
-func (c *connectionManager) listen(ctx context.Context) error {
+func (c *Connection) listen(ctx context.Context) error {
 	conn, err := c.establishConn(ctx)
 	if err != nil {
 		return err
@@ -340,7 +316,7 @@ func (c *connectionManager) listen(ctx context.Context) error {
 	return nil
 }
 
-func (c *connectionManager) establishConn(ctx context.Context) (net.Conn, error) {
+func (c *Connection) establishConn(ctx context.Context) (net.Conn, error) {
 	established := make(chan connAttemptWrapper, 2)
 	connectionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -475,7 +451,7 @@ func (c *connectionManager) establishConn(ctx context.Context) (net.Conn, error)
 	return conn, nil
 }
 
-func (c *connectionManager) readLoop(ctx context.Context, conn net.Conn) error {
+func (c *Connection) readLoop(ctx context.Context, conn net.Conn) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -506,7 +482,7 @@ func (c *connectionManager) readLoop(ctx context.Context, conn net.Conn) error {
 	}
 }
 
-func (c *connectionManager) writeLoop(ctx context.Context, conn net.Conn) error {
+func (c *Connection) writeLoop(ctx context.Context, conn net.Conn) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -535,13 +511,13 @@ func (c *connectionManager) writeLoop(ctx context.Context, conn net.Conn) error 
 	}
 }
 
-func (c *connectionManager) isStopped() bool {
+func (c *Connection) isStopped() bool {
 	c.stoppedMu.RLock()
 	defer c.stoppedMu.RUnlock()
 	return c.stopped
 }
 
-func (c *connectionManager) markStopped() {
+func (c *Connection) markStopped() {
 	if c.isStopped() {
 		return
 	}
@@ -551,7 +527,7 @@ func (c *connectionManager) markStopped() {
 	c.stoppedMu.Unlock()
 }
 
-func (c *connectionManager) sendError(err error) {
+func (c *Connection) sendError(err error) {
 	t := time.NewTimer(time.Second)
 	select {
 	case c.errorEvents <- err:
@@ -567,18 +543,4 @@ type connAttemptWrapper struct {
 	address string
 	conn    net.Conn
 	err     error
-}
-
-// ConnAttemptError is the error returned by the Manager in case the read loop is failing.
-type ConnAttemptError struct {
-	Address string
-	Err     error
-}
-
-func (cae ConnAttemptError) Error() string {
-	return fmt.Errorf("%w: %s", cae.Err, cae.Address).Error()
-}
-
-func (cae ConnAttemptError) Unwrap() error {
-	return cae.Err
 }
