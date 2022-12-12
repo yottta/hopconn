@@ -1,4 +1,4 @@
-# hopconn
+# hopconn (*ho*le *p*unching *conn*ection)
 
 A Golang library meant for establishing hole punch connections. 
 
