@@ -36,6 +36,8 @@ type connOpts struct {
 	attemptRetries         int
 	noOfAddressesToAttempt int
 
+	writeChSize int
+
 	publicIPProvider IPProvider
 	localIPProvider  IPProvider
 }
@@ -82,6 +84,12 @@ func WithLocalIPProvider(p IPProvider) func(c *connOpts) {
 	}
 }
 
+func WithWriteChannelSize(s int) func(c *connOpts) {
+	return func(c *connOpts) {
+		c.writeChSize = s
+	}
+}
+
 type Connection struct {
 	log zerolog.Logger
 
@@ -105,12 +113,12 @@ type Connection struct {
 	attemptTimeout   time.Duration
 }
 
-// NewConn returns a Connection. During calling this, the Connection will start listening on a system assigned port and will allocate also a
+// New returns a Connection. During calling this, the Connection will start listening on a system assigned port and will allocate also a
 // port for being used when Connection.AttemptConnection calls.
 // Even if the Connection.AttemptConnection will not be used, be sure that you are calling Connection.Close when you are done with it
 // or that you are cancelling the ctx given to this constructor.
 // This constructor builds a Connection that ensures correct behaviour of the Connection.AttemptConnection with a list of addresses up to a size equals with 3.
-func NewConn(ctx context.Context, opts ...func(c *connOpts)) (*Connection, error) {
+func New(ctx context.Context, opts ...func(c *connOpts)) (*Connection, error) {
 	mOpts := &connOpts{
 		log:                    log.With().Logger().Level(zerolog.ErrorLevel),
 		attemptTimeout:         3 * time.Second,
@@ -118,6 +126,7 @@ func NewConn(ctx context.Context, opts ...func(c *connOpts)) (*Connection, error
 		noOfAddressesToAttempt: 3,
 		publicIPProvider:       DefaultPublicIP,
 		localIPProvider:        LocalIP,
+		writeChSize:            100,
 	}
 	for _, o := range opts {
 		o(mOpts)
@@ -160,7 +169,7 @@ func NewConn(ctx context.Context, opts ...func(c *connOpts)) (*Connection, error
 		errorEvents:       make(chan error, 3),
 		establishedEvents: make(chan struct{}, 2),
 
-		writeCh:          make(chan []byte, 100),
+		writeCh:          make(chan []byte, mOpts.writeChSize),
 		attemptAddresses: make(chan string, mOpts.noOfAddressesToAttempt),
 		attemptRetries:   mOpts.attemptRetries,
 		attemptTimeout:   mOpts.attemptTimeout,
@@ -178,7 +187,7 @@ func NewConn(ctx context.Context, opts ...func(c *connOpts)) (*Connection, error
 }
 
 // AttemptConnection gets the list of addresses and schedules them for attempting.
-// In case the len(peerAddresses) is greater than the number of addresses to be attempted configured during NewConn,
+// In case the len(peerAddresses) is greater than the number of addresses to be attempted configured during New,
 // this method does not ensure that all the addresses will be used.
 // IMPORTANT: This method can be called only once. After this, the client needs to use Errors() in conjunction with EstablishedEvents()
 // to listen for any events happening

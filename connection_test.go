@@ -18,10 +18,10 @@ import (
 
 func TestNewConn(t *testing.T) {
 	t.Run(`Given a publicIPProvider that returns error,
-	When NewConn called,
+	When New called,
 	Then error returned`, func(t *testing.T) {
 		e := fmt.Errorf("error from provider")
-		conn, err := NewConn(context.Background(), WithPublicIPProvider(func() (string, error) {
+		conn, err := New(context.Background(), WithPublicIPProvider(func() (string, error) {
 			return "", e
 		}))
 		require.Equal(t, e, err)
@@ -31,11 +31,11 @@ func TestNewConn(t *testing.T) {
 }
 
 func TestConnection_Closing(t *testing.T) {
-	t.Run(`Given a connection got from NewConn,
+	t.Run(`Given a connection got from New,
 	When Close is called,
 	Then the connection is closed and all the resources are freed`, func(t *testing.T) {
 		initial := runtime.NumGoroutine()
-		conn, err := NewConn(context.Background(), WithLoggingLevel(zerolog.TraceLevel), WithPublicIPProvider(func() (string, error) {
+		conn, err := New(context.Background(), WithLoggingLevel(zerolog.TraceLevel), WithPublicIPProvider(func() (string, error) {
 			return "123.123.123.123", nil
 		}))
 		require.NoError(t, err)
@@ -56,12 +56,12 @@ func TestConnection_Closing(t *testing.T) {
 		require.Equalf(t, initial, runtime.NumGoroutine(), "expected equal number of goroutines")
 	})
 
-	t.Run(`Given a connection got from NewConn,
+	t.Run(`Given a connection got from New,
 	When the given context is cancelled,
 	Then the connection is closed and all the resources are freed`, func(t *testing.T) {
 		initial := runtime.NumGoroutine()
 		ctx, cancel := context.WithCancel(context.Background())
-		conn, err := NewConn(ctx, WithLoggingLevel(zerolog.TraceLevel), WithPublicIPProvider(func() (string, error) {
+		conn, err := New(ctx, WithLoggingLevel(zerolog.TraceLevel), WithPublicIPProvider(func() (string, error) {
 			return "123.123.123.123", nil
 		}))
 		require.NoError(t, err)
@@ -96,7 +96,7 @@ func TestConnection_AttemptConnection(t *testing.T) {
 		ctx, cancelFunc := context.WithCancel(context.Background())
 		defer cancelFunc()
 
-		conn1, err := NewConn(ctx,
+		conn1, err := New(ctx,
 			WithLoggingTraceID("conn1"),
 			WithLoggingLevel(zerolog.TraceLevel),
 			WithAttemptRetries(1),
@@ -105,7 +105,7 @@ func TestConnection_AttemptConnection(t *testing.T) {
 				return "111.111.111.111", nil
 			}))
 		require.NoError(t, err)
-		conn2, err := NewConn(ctx,
+		conn2, err := New(ctx,
 			WithLoggingTraceID("conn2"),
 			WithLoggingLevel(zerolog.TraceLevel),
 			WithAttemptRetries(1),
@@ -213,7 +213,7 @@ func TestConnection_AttemptConnection(t *testing.T) {
 		ctx, cancelFunc := context.WithCancel(context.Background())
 		defer cancelFunc()
 
-		conn1, err := NewConn(ctx,
+		conn1, err := New(ctx,
 			WithLoggingTraceID("conn1"),
 			WithLoggingLevel(zerolog.TraceLevel),
 			WithAttemptRetries(1),
@@ -222,7 +222,7 @@ func TestConnection_AttemptConnection(t *testing.T) {
 				return "111.111.111.111", nil
 			}))
 		require.NoError(t, err)
-		conn2, err := NewConn(ctx,
+		conn2, err := New(ctx,
 			WithLoggingTraceID("conn2"),
 			WithLoggingLevel(zerolog.TraceLevel),
 			WithAttemptRetries(1),
@@ -300,7 +300,7 @@ func TestConnection_AttemptConnection(t *testing.T) {
 		ctx, cancelFunc := context.WithCancel(context.Background())
 		defer cancelFunc()
 
-		conn1, err := NewConn(ctx,
+		conn1, err := New(ctx,
 			WithLoggingTraceID("conn1"),
 			WithLoggingLevel(zerolog.WarnLevel),
 			WithAttemptRetries(1),
@@ -344,7 +344,7 @@ func TestConnection_AttemptConnection(t *testing.T) {
 		ctx, cancelFunc := context.WithCancel(context.Background())
 		defer cancelFunc()
 
-		conn1, err := NewConn(ctx,
+		conn1, err := New(ctx,
 			WithLoggingTraceID("conn1"),
 			WithLoggingLevel(zerolog.WarnLevel),
 			WithAttemptRetries(1),
@@ -401,7 +401,7 @@ func TestConnection_AttemptConnection(t *testing.T) {
 		ctx, cancelFunc := context.WithCancel(context.Background())
 		defer cancelFunc()
 
-		conn, err := NewConn(ctx,
+		conn, err := New(ctx,
 			WithLoggingTraceID("conn"),
 			WithLoggingLevel(zerolog.WarnLevel),
 			WithAttemptRetries(1),
@@ -448,7 +448,7 @@ func TestConnection_AttemptConnection(t *testing.T) {
 		ctx, cancelFunc := context.WithCancel(context.Background())
 		defer cancelFunc()
 
-		conn, err := NewConn(ctx,
+		conn, err := New(ctx,
 			WithLoggingTraceID("conn"),
 			WithLoggingLevel(zerolog.TraceLevel),
 			WithAttemptRetries(1),
@@ -496,7 +496,7 @@ func TestConnection_AttemptConnection(t *testing.T) {
 		defer cancelFunc()
 
 		// Given
-		conn1, err := NewConn(ctx,
+		conn1, err := New(ctx,
 			WithLoggingTraceID("conn"),
 			WithLoggingLevel(zerolog.WarnLevel),
 			WithAttemptRetries(1),
@@ -506,7 +506,7 @@ func TestConnection_AttemptConnection(t *testing.T) {
 				return "111.111.111.111", nil
 			}))
 		require.NoError(t, err)
-		conn2, err := NewConn(ctx,
+		conn2, err := New(ctx,
 			WithLoggingTraceID("conn"),
 			WithLoggingLevel(zerolog.WarnLevel),
 			WithAttemptRetries(1),
@@ -516,7 +516,7 @@ func TestConnection_AttemptConnection(t *testing.T) {
 				return "111.111.111.112", nil
 			}))
 		require.NoError(t, err)
-		conn3, err := NewConn(ctx,
+		conn3, err := New(ctx,
 			WithLoggingTraceID("conn"),
 			WithLoggingLevel(zerolog.WarnLevel),
 			WithAttemptRetries(1),
@@ -637,7 +637,7 @@ func TestConnection_LocalAddress(t *testing.T) {
 	When LocalAddress is called,
 	The IP from the provider is returned containing the port from the localListener`, func(t *testing.T) {
 		localIP := "123.123.123.123"
-		conn, err := NewConn(context.Background(),
+		conn, err := New(context.Background(),
 			WithPublicIPProvider(func() (string, error) {
 				return "111.111.111.111", nil // just to avoid to call third-party during unit tests
 			}),
@@ -655,7 +655,7 @@ func TestConnection_LocalAddress(t *testing.T) {
 	t.Run(`Given a localIPProvider that returns error,
 	When LocalAddress is called,
 	The IP from the provider is returned containing the port from the localListener`, func(t *testing.T) {
-		conn, err := NewConn(context.Background(),
+		conn, err := New(context.Background(),
 			WithPublicIPProvider(func() (string, error) {
 				return "111.111.111.111", nil // just to avoid to call third-party during unit tests
 			}),

@@ -25,7 +25,7 @@ import (
 func main() {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	defer cancelFunc()
-	conn, err := hopconn.NewConn(ctx, hopconn.WithLoggingLevel(zerolog.WarnLevel))
+	conn, err := hopconn.New(ctx, hopconn.WithLoggingLevel(zerolog.WarnLevel))
 	if err != nil {
 		panic(err)
 	}
