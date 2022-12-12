@@ -68,3 +68,7 @@ To stop the connection, two mechanisms are available:
 
 ### 
 For some examples you can check the [dedicated directory](example).
+
+## What's next?
+### TLS
+For the moment the library does not support secure connections.
