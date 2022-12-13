@@ -5,6 +5,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"time"
 )
 
 type IPProvider func() (string, error)
@@ -14,6 +16,7 @@ func DefaultPublicIP() (string, error) {
 		Transport: &http.Transport{
 			DisableKeepAlives: true,
 		},
+		Timeout: 5 * time.Second,
 	}
 	return GlobalIP(c)
 }
@@ -26,6 +29,9 @@ func GlobalIP(client http.Client) (string, error) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		if os.IsTimeout(err) {
+			return "timeout", nil
+		}
 		return "", err
 	}
 	defer func() {

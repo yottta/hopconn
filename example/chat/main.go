@@ -25,7 +25,9 @@ import (
 func main() {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	defer cancelFunc()
-	conn, err := hopconn.New(ctx, hopconn.WithLoggingLevel(zerolog.WarnLevel))
+	conn, err := hopconn.New(ctx,
+		hopconn.WithLoggingLevel(zerolog.TraceLevel),
+	)
 	if err != nil {
 		panic(err)
 	}
@@ -75,12 +77,18 @@ func main() {
 				panic(err)
 			}
 		}
+	case <-ctx.Done():
+		return
+	}
+	select {
 	case <-conn.EstablishedEvents():
 		fmt.Println()
 		fmt.Println("-> Skipping other connections as the waiting connection was established")
 	case err := <-conn.Errors():
 		fmt.Println()
 		fmt.Println("-> Connection stopped", err)
+		return
+	case <-ctx.Done():
 		return
 	}
 	fmt.Println("-> Connection established! Type your message and hit Enter")
