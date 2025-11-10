@@ -2,6 +2,8 @@ package hopconn
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +42,11 @@ type connOpts struct {
 
 	publicIPProvider IPProvider
 	localIPProvider  IPProvider
+
+	caCertPath  string
+	tlsKeyPath  string
+	tlsCertPath string
+	isTLSServer bool
 }
 
 func WithLoggingTraceID(traceID string) func(c *connOpts) {
@@ -90,6 +97,30 @@ func WithWriteChannelSize(s int) func(c *connOpts) {
 	}
 }
 
+func WithTLSKeyPath(kp string) func(c *connOpts) {
+	return func(c *connOpts) {
+		c.tlsKeyPath = kp
+	}
+}
+
+func WithTLSCertPath(cp string) func(c *connOpts) {
+	return func(c *connOpts) {
+		c.tlsCertPath = cp
+	}
+}
+
+func WithTLSCACertPath(caCertPath string) func(c *connOpts) {
+	return func(c *connOpts) {
+		c.caCertPath = caCertPath
+	}
+}
+
+func WithServerFlag(isServer bool) func(c *connOpts) {
+	return func(c *connOpts) {
+		c.isTLSServer = isServer
+	}
+}
+
 type Connection struct {
 	log zerolog.Logger
 
@@ -108,9 +139,14 @@ type Connection struct {
 	stopped   bool
 
 	writeCh          chan []byte
-	attemptAddresses chan string
+	attemptAddresses chan Attempt
 	attemptRetries   int
 	attemptTimeout   time.Duration
+
+	tlsCaCertPath string
+	tlsCertPath   string
+	tlsKeyPath    string
+	isTLSServer   bool
 }
 
 // New returns a Connection. During calling this, the Connection will start listening on a system assigned port and will allocate also a
@@ -131,7 +167,8 @@ func New(ctx context.Context, opts ...func(c *connOpts)) (*Connection, error) {
 	for _, o := range opts {
 		o(mOpts)
 	}
-	local, err := net.Listen("tcp", "")
+
+	local, err := listenForIncoming(mOpts.tlsCertPath, mOpts.tlsKeyPath)
 	if err != nil {
 		return nil, err
 	}
@@ -162,6 +199,11 @@ func New(ctx context.Context, opts ...func(c *connOpts)) (*Connection, error) {
 		publicPort:      portNo,
 		localIPProvider: mOpts.localIPProvider,
 
+		tlsCertPath:   mOpts.tlsCertPath,
+		tlsKeyPath:    mOpts.tlsKeyPath,
+		tlsCaCertPath: mOpts.caCertPath,
+		isTLSServer:   mOpts.isTLSServer,
+
 		stopped:   false,
 		stoppedMu: sync.RWMutex{},
 
@@ -170,7 +212,7 @@ func New(ctx context.Context, opts ...func(c *connOpts)) (*Connection, error) {
 		establishedEvents: make(chan struct{}, 2),
 
 		writeCh:          make(chan []byte, mOpts.writeChSize),
-		attemptAddresses: make(chan string, mOpts.noOfAddressesToAttempt),
+		attemptAddresses: make(chan Attempt, mOpts.noOfAddressesToAttempt),
 		attemptRetries:   mOpts.attemptRetries,
 		attemptTimeout:   mOpts.attemptTimeout,
 	}
@@ -198,7 +240,7 @@ func (c *Connection) AttemptConnection(peerAddresses ...string) error {
 	var notAdded []string
 	for _, a := range peerAddresses {
 		select {
-		case c.attemptAddresses <- a:
+		case c.attemptAddresses <- Attempt{Address: a}:
 		default:
 			notAdded = append(notAdded, a)
 		}
@@ -209,6 +251,31 @@ func (c *Connection) AttemptConnection(peerAddresses ...string) error {
 	close(c.attemptAddresses)
 	return nil
 }
+
+//
+//// AttemptTLSConnection gets the list of addresses and their TLS certificates and schedules them for attempting.
+//// In case the len(peerAddresses) is greater than the number of addresses to be attempted configured during New,
+//// this method does not ensure that all the addresses will be used.
+//// IMPORTANT: This method can be called only once. After this, the client needs to use Errors() in conjunction with EstablishedEvents()
+//// to listen for any events happening
+//func (c *Connection) AttemptTLSConnection(attempts ...Attempt) error {
+//	if c.isStopped() {
+//		return ErrStopped
+//	}
+//	var notAdded []string
+//	for _, a := range attempts {
+//		select {
+//		case c.attemptAddresses <- a:
+//		default:
+//			notAdded = append(notAdded, a.Address)
+//		}
+//	}
+//	if len(notAdded) > 0 {
+//		return fmt.Errorf("%w: %s", ErrAddressesDismissed, strings.Join(notAdded, ","))
+//	}
+//	close(c.attemptAddresses)
+//	return nil
+//}
 
 // LocalAddress returns back the local address of the connection.
 // This can be controlled by using WithLocalIPProvider.
@@ -409,23 +476,25 @@ func (c *Connection) establishConn(ctx context.Context) (net.Conn, error) {
 			select {
 			case <-connectionCtx.Done():
 				return
-			case peerAddress, ok := <-c.attemptAddresses:
+			case attempt, ok := <-c.attemptAddresses:
 				if !ok {
 					c.log.Debug().Msg("no more addresses to check")
 					return
 				}
 				c.log.Info().
-					Str("peerAddress", peerAddress).
+					Str("peerAddress", attempt.Address).
 					Msg("trying new peer address")
 				for i := 0; i < c.attemptRetries; i++ {
 					err := func() error {
-						d := net.Dialer{Timeout: c.attemptTimeout, LocalAddr: &net.TCPAddr{Port: c.publicPort}}
-						accept, err := d.DialContext(connectionCtx, "tcp", peerAddress)
+						accept, err := c.dialPeer(connectionCtx, attempt.Address, c.tlsCaCertPath)
 						if err != nil {
 							return err
 						}
+						c.log.Info().
+							Str("peerAddress", attempt.Address).
+							Msg("peer address conn established")
 						established <- connAttemptWrapper{
-							address: peerAddress,
+							address: attempt.Address,
 							conn:    accept,
 							err:     nil,
 						}
@@ -435,7 +504,7 @@ func (c *Connection) establishConn(ctx context.Context) (net.Conn, error) {
 						c.log.Warn().
 							Err(err).
 							Int("local_port", c.publicPort).
-							Str("remote_address", peerAddress).
+							Str("remote_address", attempt.Address).
 							Msg("error dialing peer")
 						if errors.Is(err, context.Canceled) || errors.Is(err, syscall.EADDRINUSE) {
 							break
@@ -473,15 +542,13 @@ func (c *Connection) readLoop(ctx context.Context, conn net.Conn) error {
 				if os.IsTimeout(err) {
 					continue
 				}
-				if errors.Is(err, io.EOF) {
-					return err
-				}
-				if errors.Is(err, net.ErrClosed) {
+				if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || strings.Contains(err.Error(), "bad certificate") || strings.Contains(err.Error(), "tls:") {
 					return err
 				}
 				c.log.Warn().
 					Err(err).
-					Msg("unexpected error occurred during reading message from the connection")
+					Msg("reading message from the connection")
+				<-time.After(500 * time.Millisecond)
 				continue
 			}
 			for _, ch := range c.dataOutHandlers {
@@ -548,8 +615,84 @@ func (c *Connection) sendError(err error) {
 	}
 }
 
+func (c *Connection) dialPeer(ctx context.Context, peerAddress, peerCertPath string) (net.Conn, error) {
+	caCertPEM, err := os.ReadFile(c.tlsCaCertPath)
+	if err != nil {
+		return nil, err
+	}
+
+	roots := x509.NewCertPool()
+	ok := roots.AppendCertsFromPEM(caCertPEM)
+	if !ok {
+		panic("failed to parse root certificate")
+	}
+	sPeerCertPath := strings.TrimSpace(peerCertPath)
+	d := net.Dialer{Timeout: c.attemptTimeout, LocalAddr: &net.TCPAddr{Port: c.publicPort}}
+	conn, err := d.DialContext(ctx, "tcp", peerAddress)
+	if err != nil {
+		return nil, err
+	}
+	if len(sPeerCertPath) == 0 {
+		return conn, nil
+	}
+	if c.isTLSServer {
+		fmt.Println("SERVER")
+		ownCerts, err := tls.LoadX509KeyPair(c.tlsCertPath, c.tlsKeyPath)
+		if err != nil {
+			return nil, err
+		}
+		conf := &tls.Config{
+			Certificates: []tls.Certificate{ownCerts},
+			ClientCAs:    roots,
+			ClientAuth:   tls.RequireAndVerifyClientCert,
+			MinVersion:   tls.VersionTLS12,
+		}
+		return tls.Server(conn, conf), nil
+	}
+	fmt.Println("CLIENT")
+	peerCACert, err := os.ReadFile(sPeerCertPath)
+	if err != nil {
+		return nil, err
+	}
+	certPool := x509.NewCertPool()
+	if ok := certPool.AppendCertsFromPEM(peerCACert); !ok {
+		return nil, fmt.Errorf("unable to parse cert from")
+	}
+	ownCerts, err := tls.LoadX509KeyPair(c.tlsCertPath, c.tlsKeyPath)
+	if err != nil {
+		return nil, err
+	}
+	host, _, _ := net.SplitHostPort(peerAddress)
+	conf := &tls.Config{
+		RootCAs:      roots,
+		Certificates: []tls.Certificate{ownCerts},
+		ServerName:   host,
+	}
+	return tls.Client(conn, conf), nil
+}
+
+func listenForIncoming(certPath, keyPath string) (net.Listener, error) {
+	sCertPath := strings.TrimSpace(certPath)
+	sKeyPath := strings.TrimSpace(keyPath)
+	if len(sCertPath) == 0 || len(sKeyPath) == 0 {
+		return net.Listen("tcp", "")
+	}
+
+	cert, err := tls.LoadX509KeyPair(sCertPath, sKeyPath)
+	if err != nil {
+		return nil, err
+	}
+	config := &tls.Config{Certificates: []tls.Certificate{cert}}
+
+	return tls.Listen("tcp", "", config)
+}
+
 type connAttemptWrapper struct {
 	address string
 	conn    net.Conn
 	err     error
+}
+
+type Attempt struct {
+	Address string
 }
